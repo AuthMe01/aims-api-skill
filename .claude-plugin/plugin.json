@@ -1,0 +1,8 @@
+{
+  "name": "aims-api",
+  "description": "Integrate with Authme AIMS face recognition API. Use when users want to add face detection, 1:1 verification, 1:N identification, liveness detection, or FaceSet management to their application.",
+  "author": {
+    "name": "Authme",
+    "email": "leo.liu@authme.com"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "skill_name": "aims-api",
+  "evals": [
+    {
+      "id": 1,
+      "name": "python-1to1-verification",
+      "prompt": "I need to build a Python backend that verifies a user's identity by comparing their selfie against their ID card photo. Use the AIMS API.",
+      "expected_output": "Complete Python code with: HMAC-SHA256 auth helper, liveness detection call, two detect calls (ID + selfie), verify call, similarity threshold check, error handling for all API responses.",
+      "expectations": [
+        "Code includes HMAC-SHA256 signing with client_secret",
+        "Auth token is obtained before other API calls",
+        "Liveness detection is called before face verification",
+        "Two separate detect calls are made (one for ID card, one for selfie)",
+        "Verify endpoint is called with both face_tokens",
+        "Similarity threshold of 0.7 is used or mentioned",
+        "Error handling covers at least code 401, 461, and 440",
+        "client_secret is not hardcoded in the example"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "nodejs-1toN-identification",
+      "prompt": "Help me create a Node.js Express API for an office access control system. I need to register employee faces and then identify visitors. Use Authme AIMS API.",
+      "expected_output": "Node.js Express app with: auth module, FaceSet creation endpoint, employee registration endpoint, visitor identification endpoint, proper error handling.",
+      "expectations": [
+        "Express routes are defined for registration and identification",
+        "FaceSet is created with display_name and outer_id",
+        "Registration flow: detect → register to FaceSet with external_id",
+        "Identification flow: detect → identify with faceset_token and top_n",
+        "Auth token caching is implemented (not fetched per-request)",
+        "Error responses use proper HTTP status codes",
+        "Liveness detection is included or mentioned for the identification flow"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "go-liveness-check",
+      "prompt": "Write a Go function that checks if an uploaded image contains a real person (not a photo of a photo) using AIMS liveness API.",
+      "expected_output": "Go function with AIMS auth and liveness detection, returning boolean result with score.",
+      "expectations": [
+        "Go code uses crypto/hmac and crypto/sha256 for signing",
+        "Multipart form data is correctly constructed for image upload",
+        "Authorization Bearer header is set",
+        "Liveness score threshold of 0.5 is checked",
+        "Response JSON is properly parsed",
+        "Error handling for code 404 (no face) and 503 (service unavailable)"
+      ]
+    }
+  ]
+}
