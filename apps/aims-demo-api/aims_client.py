@@ -176,7 +176,7 @@ class AIMSClient:
         similarity_threshold: float = 0.7,
     ) -> dict:
         """
-        完整 1:1 身份驗證流程（活體偵測 → 偵測 → 比對）。
+        完整 1:1 身分驗證流程（活體偵測 → 偵測 → 比對）。
 
         回傳 dict:
             - liveness_score: 活體分數

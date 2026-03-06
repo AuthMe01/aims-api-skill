@@ -2,7 +2,7 @@
 AIMS Demo API — 使用 FastAPI 展示 AIMS 人臉辨識串接。
 
 此範例由 aims-api skill 產生，包含三個主要功能：
-1. 1:1 身份驗證（eKYC）
+1. 1:1 身分驗證（eKYC）
 2. 1:N 人臉搜尋（門禁/VIP 辨識）
 3. 活體偵測
 
@@ -77,7 +77,7 @@ def health():
     return {"status": "ok"}
 
 
-# ── 1:1 身份驗證 ──────────────────────────────────────
+# ── 1:1 身分驗證 ──────────────────────────────────────
 
 @app.post("/api/verify-identity")
 async def verify_identity(
@@ -86,7 +86,7 @@ async def verify_identity(
     similarity_threshold: float = Form(0.7, description="相似度門檻"),
 ):
     """
-    1:1 身份驗證 — 比對證件照與自拍照。
+    1:1 身分驗證 — 比對證件照與自拍照。
 
     流程：活體偵測 → 人臉偵測(×2) → 人臉比對
     """

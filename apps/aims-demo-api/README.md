@@ -8,7 +8,7 @@
 
 | 端點 | 說明 |
 |---|---|
-| `POST /api/verify-identity` | 1:1 身份驗證（證件照 vs 自拍照） |
+| `POST /api/verify-identity` | 1:1 身分驗證（證件照 vs 自拍照） |
 | `POST /api/liveness` | 活體偵測 |
 | `POST /api/facesets` | 建立 FaceSet |
 | `GET /api/facesets` | 列出所有 FaceSet |
