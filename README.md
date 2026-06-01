@@ -1,6 +1,6 @@
 # aims-api-skill
 
-[Claude Code](https://claude.com/claude-code) plugin for integrating with **Authme AIMS** face recognition API.
+[Claude Code](https://claude.com/claude-code) plugin for integrating with **Authme AIMS** — face recognition, liveness, FaceSet management, and OCR document recognition.
 
 Install this plugin and let Claude generate complete, production-ready integration code for your application — in any language.
 
@@ -12,12 +12,14 @@ claude plugin add https://github.com/AuthMe01/aims-api-skill
 
 ## What It Does
 
-When you describe a face recognition use case to Claude, the `aims-api` skill automatically activates and generates code with:
+When you describe an AIMS use case to Claude, the `aims-api` skill automatically activates and generates code with:
 
 - **HMAC-SHA256 authentication** with token caching
 - **Correct API call sequences** for your scenario
 - **Liveness detection** (anti-spoofing)
-- **Error handling** with all AIMS error codes
+- **OCR with quality gate** + user-facing guidance for quality failures
+- **Idempotency-Key** for OCR retry protection (no double-billing)
+- **Error handling** with all AIMS error codes (including 403 scope errors)
 - **Best practices** (token refresh, thread safety, image specs)
 
 ## Supported Scenarios
@@ -28,6 +30,8 @@ When you describe a face recognition use case to Claude, the `aims-api` skill au
 | **1:N Identification** | Search a face database (access control, VIP recognition) |
 | **Liveness Detection** | Check if image is a real person |
 | **FaceSet Management** | Create and manage face databases |
+| **OCR Document Recognition** (v1.2) | Quality check + OCR for ID cards, passports, driver's licenses, health insurance cards |
+| **OCR Usage Reporting** (v1.2) | Query cumulative OCR / quality check counts for reconciliation |
 
 ## Usage Examples
 
@@ -37,6 +41,9 @@ When you describe a face recognition use case to Claude, the `aims-api` skill au
 > Create a Node.js Express API for office access control with face recognition.
 
 > Write a Go function to check liveness using AIMS API.
+
+> Help me OCR a Taiwan ID card with AIMS — run quality check first,
+  then OCR with auto-rotate, and produce user-facing guidance when QC fails.
 ```
 
 ## Demo App

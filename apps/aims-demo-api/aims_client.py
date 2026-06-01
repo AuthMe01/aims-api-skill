@@ -9,7 +9,9 @@ import hmac
 import hashlib
 import time
 import threading
+import uuid
 from dataclasses import dataclass
+from typing import Optional
 
 import httpx
 
@@ -284,3 +286,186 @@ class AIMSClient:
         )
         data = resp.json()
         self._check_response(data)
+
+    def get_faceset(self, faceset_token: str) -> dict:
+        """取得 FaceSet 詳細資料（含已註冊的 face_tokens）。"""
+        resp = self._http.get(
+            f"{self.base_url}/aims/facesets/{faceset_token}",
+            headers=self._auth_headers(),
+        )
+        data = resp.json()
+        self._check_response(data)
+        return data["faceset"]
+
+    def update_faceset(
+        self,
+        faceset_token: str,
+        display_name: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        user_data: Optional[str] = None,
+    ) -> None:
+        """更新 FaceSet 設定。所有欄位皆為選填。"""
+        body = {}
+        if display_name is not None:
+            body["display_name"] = display_name
+        if tags is not None:
+            body["tags"] = tags
+        if user_data is not None:
+            body["user_data"] = user_data
+        resp = self._http.patch(
+            f"{self.base_url}/aims/facesets/{faceset_token}",
+            headers=self._auth_headers(),
+            json=body,
+        )
+        data = resp.json()
+        self._check_response(data)
+
+    def delete_faceset(self, faceset_token: str) -> None:
+        """
+        刪除整個 FaceSet。
+
+        若 FaceSet 內仍有已註冊的人臉，會拋 AIMSError(544)，
+        需先逐一 remove_face() 後再刪除。
+        """
+        resp = self._http.delete(
+            f"{self.base_url}/aims/facesets/{faceset_token}",
+            headers=self._auth_headers(),
+        )
+        data = resp.json()
+        self._check_response(data)
+
+    # ── OCR（v1.2 新增）──────────────────────────────
+
+    def ocr_quality_check(
+        self,
+        image_path: str,
+        card_type: str,
+        channel: str = "default",
+    ) -> dict:
+        """
+        影像品質檢查（OCR 前置）。
+
+        Args:
+            image_path: 證件圖片路徑
+            card_type: 證件類型，例如 'TWN_IDCard_Front'、'TWN_Passport_Front'
+            channel: 用量分類追蹤頻道
+
+        Returns:
+            dict: {"passed": bool, "code": int, "message": str}
+            - passed=True 表示品質檢查通過，可以送 OCR
+            - passed=False 時，code 為 457~468，message 是後端原始訊息；
+              產品端建議用 QC_GUIDANCE 對應使用者引導文案。
+        """
+        with open(image_path, "rb") as f:
+            files = {"image": f}
+            resp = self._http.post(
+                f"{self.base_url}/aims/ocr/qualitycheck",
+                headers=self._auth_headers(),
+                files=files,
+                data={"cardType": card_type, "channel": channel},
+            )
+        data = resp.json()
+        return {
+            "passed": data.get("code") == 0,
+            "code": data.get("code", 0),
+            "message": data.get("message", ""),
+            "request_id": data.get("request_id", ""),
+        }
+
+    def ocr_image(
+        self,
+        image_path: str,
+        auto_rotate: bool = True,
+        channel: str = "default",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        """
+        OCR 文字辨識。
+
+        Args:
+            image_path: 證件圖片路徑
+            auto_rotate: True 時若 0° 失敗會自動嘗試 90°/270°/180°
+            channel: 用量分類追蹤頻道
+            idempotency_key: 重試保護。若為 None，會自動產生新的 UUID；
+                若會 retry 同一份請求，請傳同一個 key（不要每次重試都產新的）。
+
+        Returns:
+            dict 包含 result.card.type、result.text、result.rotation_applied，
+            以及 idempotent_replay（True 表示本次是 cache 命中、未實際扣費）。
+
+        Raises:
+            AIMSError: 任何非 0 的 code（含 404/422/409 等）
+        """
+        if idempotency_key is None:
+            idempotency_key = str(uuid.uuid4())
+
+        headers = self._auth_headers()
+        headers["Idempotency-Key"] = idempotency_key
+
+        with open(image_path, "rb") as f:
+            files = {"image": f}
+            resp = self._http.post(
+                f"{self.base_url}/aims/ocr/image",
+                headers=headers,
+                files=files,
+                data={
+                    "channel": channel,
+                    "autoRotate": "true" if auto_rotate else "false",
+                },
+            )
+
+        if resp.status_code == 409:
+            raise AIMSError(
+                409,
+                "Idempotency-Key 重複使用但 body 不同（client bug）",
+                resp.headers.get("x-request-id", ""),
+            )
+        data = resp.json()
+        if data.get("code", 0) != 0:
+            raise AIMSError(
+                data["code"],
+                data.get("message", ""),
+                data.get("request_id", ""),
+            )
+
+        result = data["result"]
+        result["idempotent_replay"] = (
+            resp.headers.get("X-Idempotent-Replay", "false").lower() == "true"
+        )
+        return result
+
+    def ocr_calls(self) -> dict:
+        """
+        查詢累計 OCR / quality check 呼叫次數。
+
+        Returns:
+            dict 包含 api_calls、api_calls_by_channel、channels、time、resp_sign。
+            計次規則：HTTP 200 + 已知卡別 + 至少 1 個 text 欄位才計次；
+            Idempotency cache 命中的請求不計次。
+        """
+        resp = self._http.get(
+            f"{self.base_url}/aims/ocr/calls",
+            headers=self._auth_headers(),
+        )
+        data = resp.json()
+        self._check_response(data)
+        return data
+
+
+# ── 品質檢查狀態碼 → 使用者引導文案 ────────────────────
+# 後端回的 message 是英文 + 偏技術；產品端建議用這份對照表
+# 轉成更友善的引導訊息。可依需求做 i18n。
+
+QC_GUIDANCE: dict[int, str] = {
+    457: "請確認整張證件都在畫面內。",
+    458: "請把證件完整放進畫面中央。",
+    459: "請依畫面引導框對齊證件位置。",
+    460: "光線太暗或太亮，請在均勻光源下重新拍攝。",
+    461: "偵測到的證件類型與預期不符，請確認上傳的證件。",
+    462: "請使用彩色影像，灰階圖片無法辨識。",
+    463: "影像太模糊，請穩定拿好並對焦再拍。",
+    464: "證件反光，請避開光源或調整角度。",
+    465: "證件反光，請避開光源或調整角度。",
+    466: "未在證件上偵測到人臉，請確認上傳的是正確證件正面。",
+    468: "系統發生未預期錯誤，請稍後再試。",
+}

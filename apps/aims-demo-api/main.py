@@ -1,10 +1,12 @@
 """
-AIMS Demo API — 使用 FastAPI 展示 AIMS 人臉辨識串接。
+AIMS Demo API — 使用 FastAPI 展示 AIMS 串接。
 
-此範例由 aims-api skill 產生，包含三個主要功能：
+此範例由 aims-api skill 產生，涵蓋的功能：
 1. 1:1 身分驗證（eKYC）
 2. 1:N 人臉搜尋（門禁/VIP 辨識）
 3. 活體偵測
+4. FaceSet 管理
+5. OCR 文件辨識（v1.2 新增）
 
 啟動方式：
     cp .env.example .env   # 填入你的 client_id 和 client_secret
@@ -14,12 +16,14 @@ AIMS Demo API — 使用 FastAPI 展示 AIMS 人臉辨識串接。
 
 import os
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from aims_client import AIMSClient, AIMSError
+from aims_client import AIMSClient, AIMSError, QC_GUIDANCE
 
 load_dotenv()
 
@@ -62,12 +66,30 @@ async def save_upload(upload: UploadFile) -> str:
 
 def handle_aims_error(e: AIMSError):
     """將 AIMSError 轉換為 HTTP 回應。"""
-    status_map = {401: 401, 451: 400, 440: 400, 461: 400, 404: 400, 503: 503}
+    status_map = {
+        401: 401,
+        # 403: token 通過驗證但缺少該 endpoint 的 scope。
+        # 這是 server-side 設定問題（AuthMe 後台配置），client 無法解決，
+        # 透傳 403 並附上 hint。
+        403: 403,
+        451: 400,
+        440: 400,
+        461: 400,
+        404: 400,
+        409: 409,
+        422: 422,
+        429: 429,
+        503: 503,
+    }
     status = status_map.get(e.code, 500)
-    raise HTTPException(
-        status_code=status,
-        detail={"aims_code": e.code, "message": e.message, "request_id": e.request_id},
-    )
+    detail = {"aims_code": e.code, "message": e.message, "request_id": e.request_id}
+    if e.code == 403:
+        detail["hint"] = (
+            "Token 缺少此 endpoint 的權限（permission scope）。"
+            "Scope 由 AuthMe 後台依 client_id 預先配置，無法在 client 端請求；"
+            "請聯繫 AuthMe 業務窗口開通對應 scope。"
+        )
+    raise HTTPException(status_code=status, detail=detail)
 
 
 # ── 健康檢查 ──────────────────────────────────────────
@@ -216,3 +238,125 @@ async def identify_face(
         handle_aims_error(e)
     finally:
         os.unlink(path)
+
+
+# ── OCR 文件辨識（v1.2 新增）──────────────────────────
+
+@app.post("/api/ocr/qualitycheck")
+async def ocr_quality_check(
+    image: UploadFile = File(..., description="證件圖片"),
+    card_type: str = Form(
+        ...,
+        description="證件類型，例如 TWN_IDCard_Front、TWN_Passport_Front",
+    ),
+):
+    """
+    OCR 品質檢查 — 在送 OCR 之前先擋掉低品質照片。
+
+    回傳 passed=True/False，未通過時提供使用者引導文案。
+    """
+    path = await save_upload(image)
+    try:
+        result = client.ocr_quality_check(path, card_type)
+        if not result["passed"]:
+            result["user_guidance"] = QC_GUIDANCE.get(
+                result["code"],
+                "影像品質檢查未通過，請重新拍攝。",
+            )
+        return result
+    except AIMSError as e:
+        handle_aims_error(e)
+    finally:
+        os.unlink(path)
+
+
+@app.post("/api/ocr/recognize")
+async def ocr_recognize(
+    image: UploadFile = File(..., description="證件圖片"),
+    auto_rotate: bool = Form(True, description="自動旋轉重試"),
+    idempotency_key: Optional[str] = Form(
+        None,
+        description=(
+            "重試保護用 UUID。若 client 有 retry 邏輯，請對同一筆操作"
+            "傳同一個 key（不要每次 retry 都產新的）；留空會自動產生。"
+        ),
+    ),
+):
+    """
+    OCR 辨識 — 回傳偵測到的證件類型與欄位文字。
+
+    內含 Idempotency-Key 防止重試造成重複扣費。
+    """
+    path = await save_upload(image)
+    try:
+        result = client.ocr_image(
+            path,
+            auto_rotate=auto_rotate,
+            idempotency_key=idempotency_key,
+        )
+        return result
+    except AIMSError as e:
+        handle_aims_error(e)
+    finally:
+        os.unlink(path)
+
+
+@app.post("/api/ocr/quality-then-recognize")
+async def ocr_quality_then_recognize(
+    image: UploadFile = File(..., description="證件圖片"),
+    card_type: str = Form(
+        ...,
+        description="證件類型，例如 TWN_IDCard_Front、TWN_Passport_Front",
+    ),
+    auto_rotate: bool = Form(True),
+):
+    """
+    一次完成「品質檢查 → OCR」的高階 API。
+
+    品質未通過時直接回 quality_failed，不會去打 OCR，省下不必要的計費。
+    OCR 使用單一 idempotency_key，方便 client 重試。
+    """
+    path = await save_upload(image)
+    idempotency_key = str(uuid.uuid4())
+    try:
+        # Step 1: 品質檢查
+        qc = client.ocr_quality_check(path, card_type)
+        if not qc["passed"]:
+            return {
+                "stage": "quality_check",
+                "passed": False,
+                "code": qc["code"],
+                "message": qc["message"],
+                "user_guidance": QC_GUIDANCE.get(
+                    qc["code"], "影像品質檢查未通過，請重新拍攝。"
+                ),
+            }
+
+        # Step 2: OCR
+        ocr = client.ocr_image(
+            path,
+            auto_rotate=auto_rotate,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "stage": "ocr",
+            "passed": True,
+            "card_type": ocr["card"]["type"],
+            "text": ocr["text"],
+            "rotation_applied": ocr.get("rotation_applied", 0),
+            "idempotent_replay": ocr.get("idempotent_replay", False),
+            "idempotency_key": idempotency_key,
+        }
+    except AIMSError as e:
+        handle_aims_error(e)
+    finally:
+        os.unlink(path)
+
+
+@app.get("/api/ocr/usage")
+def ocr_usage():
+    """查詢累計 OCR / quality check 用量（依 channel 細分）。"""
+    try:
+        return client.ocr_calls()
+    except AIMSError as e:
+        handle_aims_error(e)

@@ -24,12 +24,22 @@ apps/aims-demo-api/            ← 範例專案（FastAPI）
 - `POST /aims/face/verify` — 1:1 比對
 - `POST /aims/face/identify` — 1:N 搜尋
 - `POST /aims/liveness/image` — 活體偵測
-- FaceSet CRUD（建立、查詢、註冊、移除、刪除）
+- FaceSet CRUD（建立、列表、查詢單筆、更新、刪除、註冊人臉、移除人臉）
+- **`POST /aims/ocr/qualitycheck`** — 影像品質檢查（v1.2 新增）
+- **`POST /aims/ocr/image`** — OCR 文字辨識（v1.2 新增，含 `Idempotency-Key` 與 `autoRotate`）
+- **`GET /aims/ocr/calls`** — 用量查詢（v1.2 新增）
+
+## v1.2 新增的關鍵概念
+
+- **Permission scopes**：每個 endpoint 對應一個 scope（例如 `ocr:image`、`face:detect`）。Scope 由 AuthMe 後台依 `client_id` 預先配置；client 無法在 runtime 請求 scope。Token 缺少 scope 時 server 回 HTTP 403。skill 在錯誤處理告知使用者該聯繫 AuthMe。
+- **Idempotency-Key**：OCR `/image` 接受此 header（UUID），同 key + 同 body 在 10 分鐘內回傳 cache、不重複扣費。產生 key 的原則是「一次邏輯操作一個 UUID」，重試共用同一個。
+- **autoRotate**：OCR `/image` 的可選參數，啟用後 0° 失敗會自動嘗試 90°/270°/180°。
+- **QC 狀態碼 457–468**：12 個品質失敗代碼，需轉換為使用者友善訊息（範例參見 `apps/aims-demo-api/aims_client.py` 的 `QC_GUIDANCE`）。
 
 ## 修改 Skill 後的測試
 
 修改 `SKILL.md` 後，可用 evals 驗證：
-1. 參考 `evals/evals.json` 中的 3 個測試案例
+1. 參考 `evals/evals.json` 中的 4 個測試案例（含 OCR）
 2. 每個案例有 prompt 和 expectations
 3. 確認產生的程式碼滿足所有 expectations
 

@@ -45,6 +45,22 @@
         "Response JSON is properly parsed",
         "Error handling for code 404 (no face) and 503 (service unavailable)"
       ]
+    },
+    {
+      "id": 4,
+      "name": "python-ocr-with-quality-gate",
+      "prompt": "Help me integrate the AIMS OCR API in Python to read a Taiwan ID card. Run the quality check first, then OCR, and produce user-facing guidance for each quality failure. The client retries on transient errors.",
+      "expected_output": "Python code with: token caching, quality check call, OCR call with autoRotate, Idempotency-Key for OCR retries, mapped user-facing messages for QC status codes 457-468, and error handling.",
+      "expectations": [
+        "Calls POST /aims/ocr/qualitycheck before POST /aims/ocr/image",
+        "Quality check request includes both image and cardType=TWN_IDCard_Front",
+        "OCR request includes autoRotate=true (or explains why omitted)",
+        "OCR call sets Idempotency-Key header using a UUID",
+        "Same Idempotency-Key is reused across retries of the same logical operation (not regenerated per HTTP attempt)",
+        "User-facing messages are produced for at least 3 of the 12 QC status codes (457-468)",
+        "Error handling distinguishes 400/404/422/429/503 from QC failures",
+        "client_secret is not hardcoded"
+      ]
     }
   ]
 }
