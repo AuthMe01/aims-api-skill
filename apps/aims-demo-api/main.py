@@ -153,11 +153,11 @@ async def liveness_check(
 @app.post("/api/facesets")
 async def create_faceset(
     display_name: str = Form(...),
-    outer_id: str = Form(...),
+    outer_id: str = Form(None),
 ):
-    """建立 FaceSet。"""
+    """建立 FaceSet。outer_id 選填。"""
     try:
-        faceset = client.create_faceset(display_name, outer_id)
+        faceset = client.create_faceset(display_name, outer_id or "")
         return faceset
     except AIMSError as e:
         handle_aims_error(e)

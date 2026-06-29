@@ -34,7 +34,7 @@ Response:
 ## Face Verification (1:1)
 
 ### POST /aims/face/verify
-Content-Type: multipart/form-data
+Content-Type: application/x-www-form-urlencoded (tokens only, no file upload; also accepts application/json)
 Authorization: Bearer {access_token}
 
 Request:
@@ -49,7 +49,7 @@ Threshold guidance: ≥0.7 same person (default), ≥0.8 high security, ≥0.6 c
 ## Face Identification (1:N)
 
 ### POST /aims/face/identify
-Content-Type: multipart/form-data
+Content-Type: application/x-www-form-urlencoded (tokens only, no file upload; also accepts application/json)
 Authorization: Bearer {access_token}
 
 Request:
@@ -83,17 +83,21 @@ Note: Does NOT return face_token. Use /aims/face/detect separately for tokens.
 ### POST /aims/facesets
 Create a FaceSet.
 Request (JSON):
-- `display_name` (string, required, unique)
-- `outer_id` (string, required, unique)
+- `display_name` (string, required) — unique within the account
+- `outer_id` (string, optional) — no uniqueness constraint; empty if omitted
 - `tags` (string[], optional)
 - `user_data` (string, optional)
 
-Response:
-- `faceset.faceset_token` (string, UUID)
-- `faceset.face_count` (int)
+Response (wrapped in `data`, no exec_time_ms/request_id):
+- `data.faceset_token` (string, UUID)
+- `data.display_name` (string)
+- `data.outer_id` (string)
+- `data.face_count` (int)
 
 ### GET /aims/facesets
-List all FaceSets.
+List FaceSets. Response wrapped in `data` with pagination:
+- `data.total`, `data.page`, `data.page_size`, `data.total_pages` (int)
+- `data.facesets[]` — each `{ faceset_token, display_name, outer_id, face_count }`
 
 ### GET /aims/facesets/{faceset_token}
 Get FaceSet details.
@@ -212,11 +216,13 @@ Idempotency replays do not count again (handler did not execute).
 
 ## Common Response Fields
 
-All responses include:
-- `code` (int) — 0 = success
-- `message` (string) — Status message
+All responses include `code` (int, 0 = success) and `message` (string).
+
+AI inference endpoints (detect, verify, identify, liveness, ocr) wrap their payload in `result` and also return:
 - `exec_time_ms` (float) — Execution time in milliseconds
 - `request_id` (string) — Request tracking ID
+
+FaceSet CRUD endpoints (`/aims/facesets...`) wrap their payload in `data` and do NOT include exec_time_ms / request_id.
 
 ## Image Specifications
 

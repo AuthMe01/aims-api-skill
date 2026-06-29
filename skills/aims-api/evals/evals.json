@@ -24,7 +24,7 @@
       "expected_output": "Node.js Express app with: auth module, FaceSet creation endpoint, employee registration endpoint, visitor identification endpoint, proper error handling.",
       "expectations": [
         "Express routes are defined for registration and identification",
-        "FaceSet is created with display_name and outer_id",
+        "FaceSet is created with display_name (outer_id is optional)",
         "Registration flow: detect → register to FaceSet with external_id",
         "Identification flow: detect → identify with faceset_token and top_n",
         "Auth token caching is implemented (not fetched per-request)",

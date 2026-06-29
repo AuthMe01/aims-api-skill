@@ -219,7 +219,7 @@ Include these in generated code as comments or documentation:
 3. **face_token lifecycle**: Registered tokens are permanent. Unregistered tokens may expire — complete operations promptly after detect.
 4. **Similarity thresholds**: 0.7 is the default threshold. Finance/security: raise to 0.8. Convenience-first: lower to 0.6.
 5. **Multi-face handling**: detect may return up to 10 faces. For single-face scenarios (selfie), use `faces[0]`. For multi-face, filter by `box` coordinates.
-6. **Request tracking**: All responses include `request_id`. Optionally send `X-Request-ID` header for custom tracking.
+6. **Request tracking**: AI inference responses (detect / verify / identify / liveness / ocr) include `request_id`; FaceSet CRUD responses use a `data` envelope without it. Optionally send `X-Request-ID` header for custom tracking.
 7. **Liveness detection**: Always recommend for user-facing scenarios. Backend batch processing can skip it.
 8. **OCR quality gate**: Always call `/aims/ocr/qualitycheck` before `/aims/ocr/image` to avoid wasted OCR billing on bad images.
 9. **OCR idempotency**: If your client has retry logic, set `Idempotency-Key` on `/aims/ocr/image` calls. Generate one UUID per logical OCR operation, reuse across retries.

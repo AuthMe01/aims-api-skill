@@ -232,10 +232,12 @@ class AIMSClient:
     # ── FaceSet 管理 ──────────────────────────────────
 
     def create_faceset(
-        self, display_name: str, outer_id: str, tags: list[str] = None
+        self, display_name: str, outer_id: str = "", tags: list[str] = None
     ) -> dict:
-        """建立 FaceSet，回傳 faceset 資料（含 faceset_token）。"""
-        body = {"display_name": display_name, "outer_id": outer_id}
+        """建立 FaceSet，回傳 faceset 資料（含 faceset_token）。outer_id 選填。"""
+        body = {"display_name": display_name}
+        if outer_id:
+            body["outer_id"] = outer_id
         if tags:
             body["tags"] = tags
         resp = self._http.post(
@@ -245,7 +247,7 @@ class AIMSClient:
         )
         data = resp.json()
         self._check_response(data)
-        return data["faceset"]
+        return data["data"]
 
     def list_facesets(self) -> list[dict]:
         """列出所有 FaceSet。"""
@@ -255,7 +257,7 @@ class AIMSClient:
         )
         data = resp.json()
         self._check_response(data)
-        return data["facesets"]
+        return data["data"]["facesets"]
 
     def register_face(
         self,
@@ -295,7 +297,7 @@ class AIMSClient:
         )
         data = resp.json()
         self._check_response(data)
-        return data["faceset"]
+        return data["data"]
 
     def update_faceset(
         self,
