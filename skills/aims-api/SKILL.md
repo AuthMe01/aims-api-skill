@@ -184,7 +184,7 @@ Always generate error handling code. Every error response carries both an HTTP s
 **Parameter errors (all face / FaceSet / auth APIs):**
 | HTTP | Code | Meaning | Action |
 |---|---|---|---|
-| 400 | 441 | Malformed parameter (token / client_id not a UUID, body not valid JSON, `time` not an integer). Known server deviation: AIMS **2.3.1** returns 450 for a non-UUID `client_id` on the token endpoint; releases after 2.3.1 return 441 as documented. Treat both as a credentials/config error. On `verify` it can also mean the two face_tokens were produced by incompatible model versions | Fix the request format — a client bug. For verify with valid UUIDs, re-run detect on both images |
+| 400 | 441 | Malformed parameter (token / client_id not a UUID, body not valid JSON, `time` not an integer). A non-UUID `client_id` is a credentials/config error, not something to retry. On `verify` it can also mean the two face_tokens were produced by incompatible model versions | Fix the request format — a client bug. For verify with valid UUIDs, re-run detect on both images |
 | 400 | 450 | Missing required parameter, or value out of range (e.g. `top_n` outside 1~20) | Add/fix the parameter — client bug |
 | 415 | 415 | Unsupported `Content-Type` | Use JSON or form as documented per endpoint |
 
