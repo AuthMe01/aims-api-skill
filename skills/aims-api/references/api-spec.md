@@ -36,7 +36,7 @@ Errors:
 | 400 | 441 | `Invalid JSON request body` / `Invalid 'time' format, must be an integer` / `Invalid client_id format` | Malformed body, `time` not an integer (a JSON string `time` is also 441), or `client_id` not a UUID |
 | 400 | 450 | `Validation failed: ...` | Missing parameter |
 
-Known deviation in AIMS 2.3.1: a non-UUID `client_id` currently returns 450 `Validation failed: ...` instead of 441 (to be fixed). Handle both.
+Known deviation in AIMS 2.3.1 only: a non-UUID `client_id` returns 450 `Validation failed: ...` instead of 441; fixed in the next release (441 `Invalid client_id format`, in both DB and non-DB modes). Handle both. A missing `client_id` is 450 in every version.
 | 401 | 401 | `Client not found or inactive` | Unknown or disabled client_id |
 | 401 | 401 | `Invalid signature` | Bad signature |
 | 401 | 401 | `Replay detected` | Same `time` + `sign` already used (e.g. two requests in the same second) |
