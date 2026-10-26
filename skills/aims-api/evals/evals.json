@@ -13,7 +13,8 @@
         "Two separate detect calls are made (one for ID card, one for selfie)",
         "Verify endpoint is called with both face_tokens",
         "Similarity threshold of 0.7 is used or mentioned",
-        "Error handling covers at least code 401, 461, and 440",
+        "Error handling branches on the JSON code and covers at least 401, 441/450, and 4010",
+        "Empty detect result (faces: []) is handled without indexing faces[0]",
         "client_secret is not hardcoded in the example"
       ]
     },
@@ -25,8 +26,10 @@
       "expectations": [
         "Express routes are defined for registration and identification",
         "FaceSet is created with display_name (outer_id is optional)",
-        "Registration flow: detect → register to FaceSet with external_id",
-        "Identification flow: detect → identify with faceset_token and top_n",
+        "Registration flow: detect → register to FaceSet with external_id (sent as a required field)",
+        "Identification flow: detect → identify with faceset_token (top_n optional, default 1)",
+        "Identification handles an empty results array and applies a similarity threshold itself",
+        "Handles 4014 (duplicate external_id) and 4012 (FaceSet not found)",
         "Auth token caching is implemented (not fetched per-request)",
         "Error responses use proper HTTP status codes",
         "Liveness detection is included or mentioned for the identification flow"
@@ -39,10 +42,10 @@
       "expected_output": "Go function with AIMS auth and liveness detection, returning boolean result with score.",
       "expectations": [
         "Go code uses crypto/hmac and crypto/sha256 for signing",
-        "Multipart form data is correctly constructed for image upload",
+        "Multipart form data is correctly constructed for image upload, with a filename ending in a supported image extension (e.g. image.jpg) to avoid code 443",
         "Authorization Bearer header is set",
         "Liveness score threshold of 0.5 is checked",
-        "Response JSON is properly parsed",
+        "Response JSON is properly parsed (faces[].liveness_score with flat x/y/width/height, no box object)",
         "Error handling for code 404 (no face) and 503 (service unavailable)"
       ]
     },
@@ -60,6 +63,19 @@
         "User-facing messages are produced for at least 3 of the 12 QC status codes (457-468)",
         "Error handling distinguishes 400/404/422/429/503 from QC failures",
         "client_secret is not hardcoded"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "python-delete-face-data",
+      "prompt": "A user closed their account. Write a Python function that removes everything AIMS stores about their face. We registered them into two FaceSets with external_id = their user ID.",
+      "expected_output": "Python function that calls DELETE /aims/face/{face_token} using the stored face_token, explains it removes the face from all FaceSets, and handles 4010.",
+      "expectations": [
+        "Uses DELETE /aims/face/{face_token} (not only the per-FaceSet remove endpoint)",
+        "Explains that the delete is irreversible and removes the face from every FaceSet",
+        "Notes that the face_token must have been stored at registration time (no lookup by external_id)",
+        "Treats 4010 (face_token not found / already deleted) as already-deleted rather than a hard failure",
+        "Handles 403 / code 473 by naming the face:register scope"
       ]
     }
   ]

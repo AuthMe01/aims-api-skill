@@ -6,7 +6,8 @@ AIMS Demo API — 使用 FastAPI 展示 AIMS 串接。
 2. 1:N 人臉搜尋（門禁/VIP 辨識）
 3. 活體偵測
 4. FaceSet 管理
-5. OCR 文件辨識（v1.2 新增）
+5. OCR 文件辨識
+6. 人臉資料刪除
 
 啟動方式：
     cp .env.example .env   # 填入你的 client_id 和 client_secret
@@ -56,7 +57,9 @@ app = FastAPI(
 
 async def save_upload(upload: UploadFile) -> str:
     """將上傳檔案存到暫存路徑，回傳路徑。"""
-    suffix = os.path.splitext(upload.filename or "img.jpg")[1]
+    # AIMS 依 multipart 檔名的副檔名判斷圖片格式（不看 Content-Type），
+    # 沒有副檔名會回 443，所以缺副檔名時補 .jpg（不需與實際格式一致）
+    suffix = os.path.splitext(upload.filename or "")[1] or ".jpg"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     content = await upload.read()
     tmp.write(content)
@@ -65,25 +68,22 @@ async def save_upload(upload: UploadFile) -> str:
 
 
 def handle_aims_error(e: AIMSError):
-    """將 AIMSError 轉換為 HTTP 回應。"""
-    status_map = {
-        401: 401,
-        # 403: token 通過驗證但缺少該 endpoint 的 scope。
+    """
+    將 AIMSError 轉換為 HTTP 回應。
+
+    AIMS 的 HTTP 狀態碼已經有意義（400 參數錯誤、404 資源不存在、409 狀態衝突…），
+    直接透傳即可；細部判斷請看 aims_code（例如 441、450、4010、4012）。
+    唯一例外是 AIMS 的 401 / 451：那是「我們的服務」拿 token 失敗，
+    對呼叫 demo API 的人來說是上游錯誤，轉成 502。
+    """
+    status = e.http_status
+    if e.code in (401, 451):
+        status = 502
+    detail = {"aims_code": e.code, "message": e.message, "request_id": e.request_id}
+    if e.code == 473:
+        # token 通過驗證但缺少該 endpoint 的 scope。
         # 這是 server-side 設定問題（AuthMe 後台配置），client 無法解決，
         # 透傳 403 並附上 hint。
-        403: 403,
-        451: 400,
-        440: 400,
-        461: 400,
-        404: 400,
-        409: 409,
-        422: 422,
-        429: 429,
-        503: 503,
-    }
-    status = status_map.get(e.code, 500)
-    detail = {"aims_code": e.code, "message": e.message, "request_id": e.request_id}
-    if e.code == 403:
         detail["hint"] = (
             "Token 缺少此 endpoint 的權限（permission scope）。"
             "Scope 由 AuthMe 後台依 client_id 預先配置，無法在 client 端請求；"
@@ -178,18 +178,19 @@ def list_facesets():
 async def register_face(
     faceset_token: str,
     image: UploadFile = File(..., description="人臉照片"),
+    external_id: str = Form(..., description="外部 ID（如員工編號），同一 FaceSet 內不可重複"),
     display_name: str = Form("", description="顯示名稱（如姓名）"),
-    external_id: str = Form("", description="外部 ID（如員工編號）"),
 ):
     """
     偵測人臉並註冊到指定 FaceSet。
 
-    一步完成 detect + register。
+    一步完成 detect + register。回傳的 face_token 請存起來，
+    之後要刪除人臉資料（DELETE /api/faces/{face_token}）時會用到。
     """
     path = await save_upload(image)
     try:
         face_token = client.detect_one(path)
-        client.register_face(faceset_token, face_token, display_name, external_id)
+        client.register_face(faceset_token, face_token, external_id, display_name)
         return {
             "face_token": face_token,
             "display_name": display_name,
@@ -200,6 +201,26 @@ async def register_face(
         handle_aims_error(e)
     finally:
         os.unlink(path)
+
+
+@app.delete("/api/facesets/{faceset_token}/faces/{face_token}")
+def remove_face(faceset_token: str, face_token: str):
+    """從 FaceSet 移除人臉（保留人臉資料）。"""
+    try:
+        client.remove_face(faceset_token, face_token)
+        return {"removed": True}
+    except AIMSError as e:
+        handle_aims_error(e)
+
+
+@app.delete("/api/faces/{face_token}")
+def delete_face(face_token: str):
+    """永久刪除人臉資料，並從所有 FaceSet 移除（無法復原）。"""
+    try:
+        client.delete_face(face_token)
+        return {"deleted": True}
+    except AIMSError as e:
+        handle_aims_error(e)
 
 
 # ── 1:N 人臉搜尋 ─────────────────────────────────────
@@ -232,6 +253,7 @@ async def identify_face(
         face_token = client.detect_one(path)
         matches = client.identify(face_token, faceset_token, top_n)
         result["matches"] = matches
+        # results 不會依門檻過濾，且 FaceSet 沒有人臉時是空陣列
         result["identified"] = bool(matches and matches[0]["similarity"] >= 0.7)
         return result
     except AIMSError as e:
@@ -240,7 +262,7 @@ async def identify_face(
         os.unlink(path)
 
 
-# ── OCR 文件辨識（v1.2 新增）──────────────────────────
+# ── OCR 文件辨識 ──────────────────────────────────────
 
 @app.post("/api/ocr/qualitycheck")
 async def ocr_quality_check(

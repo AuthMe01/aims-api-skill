@@ -32,12 +32,33 @@ class TokenCache:
 
 
 class AIMSError(Exception):
-    """AIMS API 回傳的錯誤。"""
-    def __init__(self, code: int, message: str, request_id: str = ""):
+    """
+    AIMS API 回傳的錯誤。
+
+    code 是 AIMS 回應 JSON 裡的 code（例如 441、4010），請用它判斷錯誤類型；
+    http_status 是原始 HTTP 狀態碼，可直接透傳給上層。
+    """
+    def __init__(
+        self, code: int, message: str, request_id: str = "", http_status: int = 500
+    ):
         self.code = code
         self.message = message
         self.request_id = request_id
-        super().__init__(f"AIMS Error {code}: {message} (request_id={request_id})")
+        self.http_status = http_status
+        super().__init__(
+            f"AIMS Error {code} (HTTP {http_status}): {message} (request_id={request_id})"
+        )
+
+
+# 缺少 scope 時（HTTP 403 / code 473）用來提示要開通哪個 scope
+ENDPOINT_SCOPES: dict[str, str] = {
+    "/aims/face/detect": "face:detect",
+    "/aims/face/verify": "face:verify",
+    "/aims/face/identify": "face:identify",
+    "/aims/liveness/image": "liveness:image",
+    "/aims/ocr/qualitycheck": "ocr:quality_check",
+    "/aims/ocr/image": "ocr:image",
+}
 
 
 class AIMSClient:
@@ -83,15 +104,15 @@ class AIMSClient:
             if self._token_cache.is_valid():
                 return self._token_cache.access_token
 
+            # 同一組 time + sign 只能用一次（replay 防護），
+            # 所以 token 更新必須在 lock 內，避免同一秒內重複簽章被拒。
             ts = int(time.time())
             sign = self._make_sign(ts)
             resp = self._http.post(
                 f"{self.base_url}/aims/auth/token",
                 json={"client_id": self.client_id, "time": ts, "sign": sign},
             )
-            data = resp.json()
-            if data["code"] != 0:
-                raise AIMSError(data["code"], data["message"])
+            data = self._parse(resp)
 
             self._token_cache.access_token = data["access_token"]
             self._token_cache.expires_at = time.time() + data["expires_in"]
@@ -100,13 +121,32 @@ class AIMSClient:
     def _auth_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.get_token()}"}
 
-    def _check_response(self, data: dict):
-        if data["code"] != 0:
+    def _parse(self, resp: httpx.Response) -> dict:
+        """解析回應；code != 0 時拋 AIMSError（保留 HTTP 狀態碼）。"""
+        try:
+            data = resp.json()
+        except ValueError:
+            # 少數錯誤（例如 OCR 的 409）可能不是 JSON
             raise AIMSError(
-                data["code"],
-                data.get("message", "Unknown error"),
-                data.get("request_id", ""),
+                resp.status_code,
+                resp.text or resp.reason_phrase,
+                resp.headers.get("X-Request-ID", ""),
+                http_status=resp.status_code,
             )
+        if data.get("code", 0) != 0:
+            code = data["code"]
+            if code == 401:
+                # token 失效：清掉快取，下一次呼叫會重新取得
+                self._token_cache.access_token = ""
+            message = data.get("message", "Unknown error")
+            if code == 473:
+                scope = ENDPOINT_SCOPES.get(resp.request.url.path)
+                if scope:
+                    message = f"{message} (required scope: {scope})"
+            raise AIMSError(
+                code, message, data.get("request_id", ""), http_status=resp.status_code
+            )
+        return data
 
     # ── 活體偵測 ──────────────────────────────────────
 
@@ -123,12 +163,15 @@ class AIMSClient:
                 headers=self._auth_headers(),
                 files={"image": f},
             )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
+        # 回應格式：result.face_count + result.faces[]，
+        # 每個 face 含 liveness_score、x、y、width、height、confidence（沒有 box 物件）
         faces = data["result"]["faces"]
         if not faces:
-            raise AIMSError(404, "照片中未偵測到人臉")
-        return faces[0]["liveness_score"]
+            raise AIMSError(404, "照片中未偵測到人臉", http_status=404)
+        # 多張臉時以面積最大的那張（通常是自拍主體）為準
+        main_face = max(faces, key=lambda f: f["width"] * f["height"])
+        return main_face["liveness_score"]
 
     # ── 人臉偵測 ──────────────────────────────────────
 
@@ -136,6 +179,7 @@ class AIMSClient:
         """
         偵測圖片中所有人臉，回傳 face list。
         每個 face 包含 face_token、box、landmarks。
+        沒有人臉時回傳空 list（AIMS 回 code 0、faces: []，不算錯誤）。
         """
         with open(image_path, "rb") as f:
             resp = self._http.post(
@@ -143,15 +187,15 @@ class AIMSClient:
                 headers=self._auth_headers(),
                 files={"image": f},
             )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["result"]["faces"]
 
     def detect_one(self, image_path: str) -> str:
         """偵測並回傳第一張臉的 face_token。若無人臉則拋出例外。"""
         faces = self.detect(image_path)
         if not faces:
-            raise AIMSError(0, "圖片中未偵測到人臉")
+            # AIMS 本身回 code 0；這裡用 404 讓上層知道是「找不到人臉」
+            raise AIMSError(404, "圖片中未偵測到人臉", http_status=422)
         return faces[0]["face_token"]
 
     # ── 1:1 比對 ──────────────────────────────────────
@@ -166,8 +210,7 @@ class AIMSClient:
                 "face_token_2": face_token_2,
             },
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["result"]["similarity"]
 
     def verify_identity(
@@ -213,20 +256,24 @@ class AIMSClient:
         self,
         face_token: str,
         faceset_token: str,
-        top_n: int = 3,
+        top_n: Optional[int] = None,
     ) -> list[dict]:
-        """在 FaceSet 中搜尋最相似的人臉，回傳 top_n 筆結果。"""
+        """
+        在 FaceSet 中搜尋最相似的人臉，回傳 top_n 筆結果。
+
+        top_n 選填（1~20），不帶時 AIMS 預設回 1 筆。
+        結果依相似度由高到低排序，但不會依門檻過濾；
+        FaceSet 內沒有人臉時回傳空 list。
+        """
+        body = {"face_token": face_token, "faceset_token": faceset_token}
+        if top_n is not None:
+            body["top_n"] = top_n
         resp = self._http.post(
             f"{self.base_url}/aims/face/identify",
             headers=self._auth_headers(),
-            data={
-                "face_token": face_token,
-                "faceset_token": faceset_token,
-                "top_n": top_n,
-            },
+            data=body,
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["result"]["results"]
 
     # ── FaceSet 管理 ──────────────────────────────────
@@ -245,8 +292,7 @@ class AIMSClient:
             headers=self._auth_headers(),
             json=body,
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["data"]
 
     def list_facesets(self) -> list[dict]:
@@ -255,39 +301,56 @@ class AIMSClient:
             f"{self.base_url}/aims/facesets",
             headers=self._auth_headers(),
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["data"]["facesets"]
 
     def register_face(
         self,
         faceset_token: str,
         face_token: str,
+        external_id: str,
         display_name: str = "",
-        external_id: str = "",
     ) -> None:
-        """將 face_token 註冊到 FaceSet。"""
-        body = {"face_token": face_token}
+        """
+        將 face_token 註冊到 FaceSet。
+
+        external_id 必填，且在同一個 FaceSet 內不可重複（重複會拋 4014）。
+        建議用你系統裡的使用者 ID，identify 結果的 face_id 就能直接對回去。
+        """
+        body = {"face_token": face_token, "external_id": external_id}
         if display_name:
             body["display_name"] = display_name
-        if external_id:
-            body["external_id"] = external_id
         resp = self._http.post(
             f"{self.base_url}/aims/facesets/{faceset_token}/register",
             headers=self._auth_headers(),
             json=body,
         )
-        data = resp.json()
-        self._check_response(data)
+        self._parse(resp)
+
+    def delete_face(self, face_token: str) -> None:
+        """
+        永久刪除人臉資料（特徵向量與人臉裁切圖），並從所有 FaceSet 移除。
+
+        無法復原。只想讓人臉不再出現在某個 FaceSet 的搜尋結果，請用 remove_face()。
+        face_token 不存在或已刪除時拋 AIMSError(4010)。
+        """
+        resp = self._http.delete(
+            f"{self.base_url}/aims/face/{face_token}",
+            headers=self._auth_headers(),
+        )
+        self._parse(resp)
 
     def remove_face(self, faceset_token: str, face_token: str) -> None:
-        """從 FaceSet 移除人臉。"""
+        """
+        從 FaceSet 移除人臉（不刪除人臉資料）。
+
+        face_token 不在此 FaceSet（含已移除）時拋 AIMSError(4011)。
+        """
         resp = self._http.delete(
             f"{self.base_url}/aims/facesets/{faceset_token}/faces/{face_token}",
             headers=self._auth_headers(),
         )
-        data = resp.json()
-        self._check_response(data)
+        self._parse(resp)
 
     def get_faceset(self, faceset_token: str) -> dict:
         """取得 FaceSet 詳細資料（含已註冊的 face_tokens）。"""
@@ -295,8 +358,7 @@ class AIMSClient:
             f"{self.base_url}/aims/facesets/{faceset_token}",
             headers=self._auth_headers(),
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data["data"]
 
     def update_faceset(
@@ -319,8 +381,7 @@ class AIMSClient:
             headers=self._auth_headers(),
             json=body,
         )
-        data = resp.json()
-        self._check_response(data)
+        self._parse(resp)
 
     def delete_faceset(self, faceset_token: str) -> None:
         """
@@ -333,10 +394,9 @@ class AIMSClient:
             f"{self.base_url}/aims/facesets/{faceset_token}",
             headers=self._auth_headers(),
         )
-        data = resp.json()
-        self._check_response(data)
+        self._parse(resp)
 
-    # ── OCR（v1.2 新增）──────────────────────────────
+    # ── OCR ──────────────────────────────────────────
 
     def ocr_quality_check(
         self,
@@ -366,6 +426,9 @@ class AIMSClient:
                 files=files,
                 data={"cardType": card_type, "channel": channel},
             )
+        if resp.status_code != 200:
+            # 401 / 403 / 400 等是真正的錯誤，不是品質未通過
+            self._parse(resp)
         data = resp.json()
         return {
             "passed": data.get("code") == 0,
@@ -420,15 +483,10 @@ class AIMSClient:
             raise AIMSError(
                 409,
                 "Idempotency-Key 重複使用但 body 不同（client bug）",
-                resp.headers.get("x-request-id", ""),
+                resp.headers.get("X-Request-ID", ""),
+                http_status=409,
             )
-        data = resp.json()
-        if data.get("code", 0) != 0:
-            raise AIMSError(
-                data["code"],
-                data.get("message", ""),
-                data.get("request_id", ""),
-            )
+        data = self._parse(resp)
 
         result = data["result"]
         result["idempotent_replay"] = (
@@ -449,8 +507,7 @@ class AIMSClient:
             f"{self.base_url}/aims/ocr/calls",
             headers=self._auth_headers(),
         )
-        data = resp.json()
-        self._check_response(data)
+        data = self._parse(resp)
         return data
 
 

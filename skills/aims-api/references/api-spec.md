@@ -1,18 +1,65 @@
-# AIMS API Specification Reference
+# AIMS API Specification Reference (v2.3)
+
+Source of truth: AIMS v2.3 documentation at https://docs.authme.com/docs/aims/v2.3
+
+## Health and Version (no auth)
+
+### GET /aims/ping
+Response: `{"message": "pong"}` (no `code` field).
+
+### GET /aims/version
+Response (top level, no envelope):
+```json
+{"system": {"aims": "2.3.1", "engine": "9.1.0"}, "dependencies": {"cuda": "...", "onnxruntime": "...", "opencv": "...", "openssl": "...", "tensorrt": "..."}}
+```
+v2.3 behavior applies when `system.aims` starts with `2.3`.
 
 ## Authentication
 
 ### POST /aims/auth/token
-Request (JSON):
+Content-Type: `application/json`
+
+Request:
 - `client_id` (string, UUID, required) — Client identifier
 - `time` (integer, required) — Unix timestamp in seconds, ±5 min tolerance
-- `sign` (string, required) — HMAC-SHA256(`{client_id}{time}`, client_secret) as hex
+- `sign` (string, required) — HMAC-SHA256(`{client_id}{time}`, client_secret) as hex; upper or lower case accepted
 
-Response:
+Response (top level, no `result`/`data` envelope):
 - `code` (int) — 0 = success
 - `access_token` (string) — Bearer token for subsequent calls
 - `token_type` (string) — "bearer"
-- `expires_in` (int) — 300 (seconds)
+- `expires_in` (int) — 300 (seconds). No refresh token.
+
+Errors:
+| HTTP | code | message | Scenario |
+|---|---|---|---|
+| 400 | 441 | `Invalid JSON request body` / `Invalid 'time' format, must be an integer` / `Invalid client_id format` | Malformed body, `time` not an integer (a JSON string `time` is also 441), or `client_id` not a UUID |
+| 400 | 450 | `Validation failed: ...` | Missing parameter |
+
+Known deviation in AIMS 2.3.1: a non-UUID `client_id` currently returns 450 `Validation failed: ...` instead of 441 (to be fixed). Handle both.
+| 401 | 401 | `Client not found or inactive` | Unknown or disabled client_id |
+| 401 | 401 | `Invalid signature` | Bad signature |
+| 401 | 401 | `Replay detected` | Same `time` + `sign` already used (e.g. two requests in the same second) |
+| 401 | 451 | `Timestamp out of range` | `time` off by more than ±5 min |
+| 415 | 415 | `Unsupported Content-Type` | Not JSON / form |
+| 500 | 500 | `Internal server error` | — |
+
+### Permission scopes
+Scopes are pre-configured per `client_id`; missing scope → HTTP 403, `code` 473.
+
+| Endpoint | Scope |
+|---|---|
+| `POST /aims/face/detect` | `face:detect` |
+| `POST /aims/face/verify` | `face:verify` |
+| `POST /aims/face/identify` | `face:identify` |
+| `DELETE /aims/face/{face_token}` | `face:register` |
+| `POST /aims/facesets/{token}/register` | `face:register` |
+| `GET /aims/facesets`, `GET /aims/facesets/{token}` | `faceset:read` |
+| `POST /aims/facesets`, `PATCH`/`DELETE /aims/facesets/{token}`, `DELETE /aims/facesets/{token}/faces/{face_token}` | `faceset:write` |
+| `POST /aims/liveness/image` | `liveness:image` |
+| `POST /aims/ocr/qualitycheck` | `ocr:quality_check` |
+| `POST /aims/ocr/image` | `ocr:image` |
+| `GET /aims/ocr/calls` | none |
 
 ## Face Detection
 
@@ -31,6 +78,10 @@ Response:
 - `result.faces[].encoding.vector` (string) — Base64-encoded feature vector
 - `result.faces[].encoding.version` (string) — Model version
 
+No face → `code` 0, `face_number` 0, `faces: []` (not an error). The result also carries `truncated` (bool) — true when the 10-face limit was hit, meaning the image may contain faces that were not processed (don't rely on detect for crowd photos).
+
+Errors: 400/441 malformed, 400/442 `image` not file/URL/base64, 400/443 multipart filename has no supported extension, 400/446 undecodable image, 400/449 no/unreadable image, 401/401, 403/473, 429/445 busy, 500/500.
+
 ## Face Verification (1:1)
 
 ### POST /aims/face/verify
@@ -44,7 +95,9 @@ Request:
 Response:
 - `result.similarity` (float) — 0.0 ~ 1.0
 
-Threshold guidance: ≥0.7 same person (default), ≥0.8 high security, ≥0.6 convenience
+Threshold guidance: ≥0.7 same person (default), ≥0.8 high security, ≥0.6 convenience; 0.5~0.7 may warrant manual review
+
+Errors: 400/441 token not a UUID (or the two tokens have incompatible feature versions), 400/450 missing token, 400/4010 face_token not found/expired/not owned, 401/401, 403/473, 500/500.
 
 ## Face Identification (1:N)
 
@@ -63,6 +116,19 @@ Response:
 - `result.results[].face_name` (string) — display_name at registration
 - `result.results[].face_id` (string) — external_id at registration
 
+`results` is sorted by similarity, highest first, and is NOT filtered by threshold. Empty FaceSet → `code` 0, `results: []`.
+
+Errors: 400/441 token not a UUID, 400/450 missing token or `top_n` outside 1~20, 400/4010 face_token not found/expired/not owned, 401/401, 403/473, 404/4012 FaceSet not found/not owned, 500/500.
+
+### DELETE /aims/face/{face_token}
+Authorization: Bearer {access_token}
+
+Permanently deletes the face_token and its face data (feature vector, cropped face image) and removes it from every FaceSet. Irreversible. To only remove it from one FaceSet, use `DELETE /aims/facesets/{faceset_token}/faces/{face_token}`.
+
+Response: `{ "code": 0, "message": "Face with ID <face_token> deleted" }`
+
+Errors: 400/441 not a UUID, 401/401, 403/473, 404/4010 not found / already deleted / not owned, 500/500.
+
 ## Liveness Detection
 
 ### POST /aims/liveness/image
@@ -71,10 +137,17 @@ Authorization: Bearer {access_token}
 
 Request:
 - `image` (file/string, required) — Image file, base64, or URL
+- `channel` (string, optional) — usage tracking channel (default `default`)
 
 Response:
+- `result.face_count` (int) — Number of faces (max 10)
 - `result.faces[].liveness_score` (float) — 0.0 ~ 1.0 (≥0.5 = real person)
-- `result.faces[].box` (object) — Face bounding box
+- `result.faces[].x`, `.y`, `.width`, `.height` (float) — Face box, flat fields (no `box` object)
+- `result.faces[].confidence` (float) — Face detection confidence
+
+No face → HTTP 404, `{ "code": 404, "message": "No face detected", ... }` without `result`.
+
+Errors (HTTP status = `code`): 400 missing image, 401 unauthorized, 404 no face, 429 busy, 500 inference failure, 503 liveness service not enabled. Unreadable image → HTTP 400 / `code` 449.
 
 Note: Does NOT return face_token. Use /aims/face/detect separately for tokens.
 
@@ -84,15 +157,17 @@ Note: Does NOT return face_token. Use /aims/face/detect separately for tokens.
 Create a FaceSet.
 Request (JSON):
 - `display_name` (string, required) — unique within the account
-- `outer_id` (string, optional) — no uniqueness constraint; empty if omitted
+- `outer_id` (string, optional) — no uniqueness constraint; returned as `null` if omitted
 - `tags` (string[], optional)
 - `user_data` (string, optional)
 
 Response (wrapped in `data`, no exec_time_ms/request_id):
 - `data.faceset_token` (string, UUID)
 - `data.display_name` (string)
-- `data.outer_id` (string)
+- `data.outer_id` (string | null)
 - `data.face_count` (int)
+
+Errors: 400/441 invalid JSON, 400/450 missing `display_name`, 400/4021 `display_name` already exists, 401/401, 403/473, 415/415.
 
 ### GET /aims/facesets
 List FaceSets. Response wrapped in `data` with pagination:
@@ -100,25 +175,35 @@ List FaceSets. Response wrapped in `data` with pagination:
 - `data.facesets[]` — each `{ faceset_token, display_name, outer_id, face_count }`
 
 ### GET /aims/facesets/{faceset_token}
-Get FaceSet details.
+Get FaceSet details, including registered faces.
+
+Errors: 400/441 not a UUID, 401/401, 403/473, 404/4012.
 
 ### PATCH /aims/facesets/{faceset_token}
-Update FaceSet. Body: `display_name`, `tags`, `user_data` (all optional).
+Update FaceSet. Body (JSON): `display_name`, `tags`, `user_data` (all optional).
+
+Errors: 400/441 not a UUID or invalid JSON, 400/450 `display_name` is an empty string, 400/4021 new `display_name` already exists, 401/401, 403/473, 404/4012, 415/415.
 
 ### DELETE /aims/facesets/{faceset_token}
-Delete FaceSet. Must remove all faces first (error 544 if not empty).
+Delete FaceSet. Must remove all faces first.
+
+Errors: 400/441, 401/401, 403/473, 404/4012, 409/544 FaceSet still has faces.
 
 ### POST /aims/facesets/{faceset_token}/register
 Register a face to FaceSet.
 Request (JSON):
 - `face_token` (string, UUID, required)
 - `display_name` (string, optional)
-- `external_id` (string, optional, unique within FaceSet)
+- `external_id` (string, **required**, unique within FaceSet) — map to the user ID in your system
+
+Errors: 400/441 not a UUID or invalid JSON, 400/450 missing `face_token` or `external_id`, 400/4010 face_token not found/expired/not owned, 400/4014 `external_id` already exists, 401/401, 403/473, 404/4012, 415/415.
 
 ### DELETE /aims/facesets/{faceset_token}/faces/{face_token}
 Remove a face from FaceSet (does not delete face data).
 
-## OCR Document Recognition (v1.2)
+Errors: 400/441, 401/401, 403/473, 404/4010 face_token not found, 404/4011 face_token not registered in this FaceSet (incl. already removed), 404/4012 FaceSet not found.
+
+## OCR Document Recognition
 
 ### POST /aims/ocr/qualitycheck
 Image quality gate. Call before `/aims/ocr/image` to avoid wasting OCR billing on bad images.
@@ -216,7 +301,11 @@ Idempotency replays do not count again (handler did not execute).
 
 ## Common Response Fields
 
-All responses include `code` (int, 0 = success) and `message` (string).
+All responses except `/aims/ping` and `/aims/version` include top-level `code` (int, 0 = success) and `message` (string). Error responses use the same top-level `{code, message}` shape on every endpoint (inference errors also carry `request_id`). Branch on `code`, not `message` (English, wording may change).
+
+Delete / remove / register success bodies are just `{code: 0, message}` (plus `data` on register when present) — check `code == 0`.
+
+Common codes across face / FaceSet / auth APIs: 441 malformed parameter (HTTP 400), 450 missing or out-of-range parameter (HTTP 400), 415 unsupported Content-Type, 401 auth, 451 clock skew (HTTP 401), 473 missing scope (HTTP 403), 500 internal error, 502 data access error (HTTP 500).
 
 AI inference endpoints (detect, verify, identify, liveness, ocr) wrap their payload in `result` and also return:
 - `exec_time_ms` (float) — Execution time in milliseconds
@@ -227,6 +316,7 @@ FaceSet CRUD endpoints (`/aims/facesets...`) wrap their payload in `data` and do
 ## Image Specifications
 
 - Formats: JPG, JPEG, PNG, BMP, WebP, TIFF
+- Multipart: the `image` part's **filename must end in** `.jpg` / `.jpeg` / `.jpe` / `.png` / `.bmp` / `.tif` / `.tiff` / `.webp` (case-insensitive). The server chooses the decoder by extension and ignores `Content-Type`; no / unknown extension → HTTP 400, `code` 443 (`PARAMETER ERROR ImageType`). Applies to detect, liveness, and OCR uploads.
 - Recommended max: 5000 × 5000 pixels
 - Max faces per detect: 10
 - Input methods: multipart file upload (recommended), base64, public URL
